@@ -36,7 +36,7 @@ static int __init proj3_init(void)
 //exit module
 static void __exit proj3_exit(void)
 {
-	remove_proc_entry("hello_proc", NULL);
+	remove_proc_entry("perftop", NULL);
 }
 
 module_init(proj3_init);
