@@ -5,21 +5,26 @@
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
 #include <linux/kprobes.h>
+#include <linux/hashtable.h>
+#include <linux/sched.h>
+#define BITS 8
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Luke Sanyour");
 MODULE_DESCRIPTION("Project 3 Perftop");
 
-static unsigned int perftopCount = 0;
+//static DEFINE_HASHTABLE(pid_hashtable, BITS);
+static pid_t pid;
 //entry handler to increment count of times perftop has been called
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	perftopCount++;
+	struct task_struct *p = regs_return_value(regs);
+	pid = p->pid;
 	return 0;
 }
 //create proc file
 static int perftop_show(struct seq_file *m, void *v) {
-	seq_printf(m, "%u\n", perftopCount);
+	seq_printf(m, "%d\n", pid);
 	return 0;
 }
 
@@ -28,7 +33,7 @@ static int perftop_open(struct inode *inode, struct  file *file) {
 }
 static struct kretprobe perftop_kretprobe = {
 	.handler		= ret_handler,
-	.kp.symbol_name = "perftop_show"
+	.kp.symbol_name = "pick_next_task_fair"
 };
 static const struct file_operations perftop_fops = {
 	.owner = THIS_MODULE,
