@@ -14,12 +14,16 @@ MODULE_AUTHOR("Luke Sanyour");
 MODULE_DESCRIPTION("Project 3 Perftop");
 
 //static DEFINE_HASHTABLE(pid_hashtable, BITS);
-static pid_t pid;
-//entry handler to increment count of times perftop has been called
+static int pid = 0;
+//return handler to increment count of times perftop has been called
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	struct task_struct *p = regs_return_value(regs);
-	pid = p->pid;
+	if(regs_return_value(regs))
+	{
+		struct task_struct *p = (struct task_struct *)regs_return_value(regs);
+		pid = p->pid;
+
+	}
 	return 0;
 }
 //create proc file
@@ -33,7 +37,9 @@ static int perftop_open(struct inode *inode, struct  file *file) {
 }
 static struct kretprobe perftop_kretprobe = {
 	.handler		= ret_handler,
-	.kp.symbol_name = "pick_next_task_fair"
+	.kp.symbol_name = "pick_next_task_fair",
+	.maxactive = 1,
+
 };
 static const struct file_operations perftop_fops = {
 	.owner = THIS_MODULE,
