@@ -4,20 +4,32 @@
 #include <linux/slab.h>
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
+#include <linux/kprobes.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Luke Sanyour");
 MODULE_DESCRIPTION("Project 3 Perftop");
 
+static unsigned int perftopCount = 0;
+//entry handler to increment count of times perftop has been called
+static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	perftopCount++;
+	return 0;
+}
 //create proc file
 static int perftop_show(struct seq_file *m, void *v) {
-	seq_printf(m, "Hello World!\n");
+	seq_printf(m, "%u\n", perftopCount);
 	return 0;
 }
 
 static int perftop_open(struct inode *inode, struct  file *file) {
 	return single_open(file, perftop_show, NULL);
 }
+static struct kretprobe perftop_kretprobe = {
+	.handler		= ret_handler,
+	.kp.symbol_name = "perftop_show"
+};
 static const struct file_operations perftop_fops = {
 	.owner = THIS_MODULE,
 	.open = perftop_open,
@@ -30,12 +42,15 @@ static const struct file_operations perftop_fops = {
 //init module
 static int __init proj3_init(void)
 {
+	int ret;
 	proc_create("perftop", 0, NULL, &perftop_fops);
+	ret = register_kretprobe(&perftop_kretprobe);
 	return 0;
 }
 //exit module
 static void __exit proj3_exit(void)
 {
+	unregister_kretprobe(&perftop_kretprobe);
 	remove_proc_entry("perftop", NULL);
 }
 
