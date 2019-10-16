@@ -1,4 +1,4 @@
-MODULE	 = proj3
+MODULE	 = perftop
 
 obj-m += $(MODULE).o
 
