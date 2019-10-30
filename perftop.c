@@ -9,13 +9,15 @@
 #include <linux/sched.h>
 #include <linux/jhash.h>
 #include <linux/stacktrace.h>
-#define MAX_TRACE 16
+#include <linux/kallsyms.h>
+#define MAX_TRACE 10
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Luke Sanyour");
 MODULE_DESCRIPTION("Project 3 Perftop");
 
 static DEFINE_HASHTABLE(pidHashtable, 16);
+//static DEFINE_SPINLOCK(my_lock);
 //An entry in the hash table
 struct hash_entry {
 
@@ -23,15 +25,25 @@ struct hash_entry {
 	int numSchedules;
 	struct hlist_node hash_list;
 	unsigned long *stack_trace;
+	int space;
 };
+//using kallsyms to get save_stack_trace_user symbol
+unsigned int stack_trace_save_user(unsigned long *store, unsigned int size);
+typedef typeof(&stack_trace_save_user) stack_trace_save_user_fn;
+#define stack_trace_save_user (* (stack_trace_save_user_fn)kallsyms_stack_trace_save_user)
+void *kallsyms_stack_trace_save_user = NULL;
+
 //function and add and update PIDs in the hash table
-void addPid(u32 stackTraceValue, unsigned long *stack_trace)
+void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id)
 {	
 	int bkt;
 	struct hash_entry *current_hash_entry;
 	struct hash_entry *he = kmalloc(sizeof(*he), GFP_ATOMIC);
+	u32 hash;
 	//hash the stack trace and PID value
-	u32 hash = jhash(&stackTraceValue, sizeof(stackTraceValue), 0);	
+	printk(KERN_INFO "Attempting to hash\n");
+	hash = jhash(&stackTraceValue, sizeof(stackTraceValue), 0);	
+	printk(KERN_INFO "Hash: %d\n", hash);
 	//check if PID is in hash table and update
 	if(!hash_empty(pidHashtable))
 	{
@@ -50,6 +62,7 @@ void addPid(u32 stackTraceValue, unsigned long *stack_trace)
 		he->hash_key = hash;
 		he->numSchedules = 1;
 		he->stack_trace = stack_trace;
+		he->space = space_id;
 		hash_add(pidHashtable, &he->hash_list, hash);
 	}
 }
@@ -66,10 +79,12 @@ void deleteHashTable(void)
 //entry handler for Kretprobe
 static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	unsigned long *stackTrace = kmalloc(sizeof(*stackTrace), GFP_ATOMIC);
+	unsigned long *stackTrace = kmalloc(15*sizeof(unsigned long), GFP_ATOMIC);
 	u32 stackTraceValue = 0;
 	int i = 0;
 	u32 pid;
+	int entries;
+	int space_id;
 
 	//retrive current task, which is the second argument of pick_next_task_fair,
 	//stored in rsi register by standard x86 64-bit calling convention
@@ -79,13 +94,27 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 		if(p != NULL && p->pid)
 		{	
 			pid = p->pid;
-			stack_trace_save(stackTrace, MAX_TRACE, 0);
+			printk(KERN_INFO "PID: %d\n", pid);
+			//kernel space task
+			if(p->mm == NULL)
+			{
+				entries = stack_trace_save(stackTrace, MAX_TRACE, 0);
+				space_id= 0;
+			}		
 			//convert the stack trace into a usable value
+			else
+			{
+				entries = kallsyms_stack_trace_save_user(stackTrace, MAX_TRACE);
+				space_id = 1;
+			}
+
 			for(i = 0; i < MAX_TRACE; i++)
 				stackTraceValue += stackTrace[i];
 
+			printk(KERN_INFO "Stack Trace Value: %d\n", stackTraceValue);
+
 			stackTraceValue += pid;
-			addPid(stackTraceValue, stackTrace);
+			addPid(stackTraceValue, stackTrace, space_id);
 		}
 	}
 
@@ -97,15 +126,23 @@ static int perftop_show(struct seq_file *m, void *v) {
 	int i = 0;
 	struct hash_entry *current_hash_entry;	
 	unsigned long *current_stack_trace;
+	int process_num = 1;
 	hash_for_each(pidHashtable, bkt, current_hash_entry, hash_list)
 	{
 		current_stack_trace = current_hash_entry->stack_trace;
+		seq_printf(m, "===Process # %d=== \n", process_num);
+		if(current_hash_entry->space)
+			seq_printf(m, "KERNEL TASK\n");
+		if(!current_hash_entry->space)
+			seq_printf(m, "USER TASK\n");
+
 		seq_printf(m, "Stack Trace: \n");
 		for(i = 0; i < MAX_TRACE; i++)
 		{
-			seq_printf(m, "%lu\n", current_stack_trace[i]);
+			seq_printf(m, "%lx\n", current_stack_trace[i]);
 		}	
 		seq_printf(m, "# Of Schedules: %d\n ", current_hash_entry->numSchedules);
+		process_num++;
 	}
 	return 0;
 
@@ -133,6 +170,7 @@ static const struct file_operations perftop_fops = {
 static int __init proj3_init(void)
 {
 	int ret;
+	kallsyms_stack_trace_save_user = (void*)kallsyms_lookup_name("stack_trace_save_user");
 	//register KProbe
 	ret = register_kretprobe(&perftop_kretprobe);
 	//create Proc File "perftop"
