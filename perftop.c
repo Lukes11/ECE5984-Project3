@@ -23,15 +23,18 @@ struct hash_entry {
 
 	u32 hash_key;
 	int numSchedules;
-	struct hlist_node hash_list;
 	unsigned long *stack_trace;
 	int space;
+	unsigned long long currentTime;
+	unsigned long long cumulativeTime;
+	struct hlist_node hash_list;
 };
-//using kallsyms to get save_stack_trace_user symbol
+//Create function pointer to stack_trace_save_user, since it's not an exported function
+//Obtained the function address from /proc/kallsyms
 static unsigned int (*stack_trace_save_user_p)(unsigned long *, unsigned int) = (unsigned int (*)(unsigned long*, unsigned int)) 0xffffffffae15e050;
 
 //function and add and update PIDs in the hash table
-void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id)
+void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id, unsigned long long time)
 {	
 	int bkt;
 	struct hash_entry *current_hash_entry;
@@ -46,9 +49,11 @@ void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id)
 	{
 		hash_for_each(pidHashtable, bkt, current_hash_entry, hash_list)
 		{
+			//Increment the number of schedules and update the current time
 			if(current_hash_entry->hash_key == hash)
 			{
 				current_hash_entry->numSchedules++;
+				current_hash_entry->currentTime = time;
 				return;
 			}
 		}
@@ -60,6 +65,8 @@ void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id)
 		he->numSchedules = 1;
 		he->stack_trace = stack_trace;
 		he->space = space_id;
+		he->currentTime = time;
+		he->cumulativeTime = 0;
 		hash_add(pidHashtable, &he->hash_list, hash);
 	}
 }
@@ -80,42 +87,81 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	u32 stackTraceValue = 0;
 	int i = 0;
 	u32 pid;
-	int entries;
-	int space_id;
+	int bkt;
+	struct hash_entry *current_hash_entry;
+	unsigned long hash;
+
 
 	//retrive current task, which is the second argument of pick_next_task_fair,
 	//stored in rsi register by standard x86 64-bit calling convention
 	if(regs->si)
 	{
+		//scheduled out task
 		struct task_struct *p = (struct task_struct *)regs->si;
 		if(p != NULL && p->pid)
 		{	
 			pid = p->pid;
-			printk(KERN_INFO "PID: %d\n", pid);
+			printk(KERN_INFO "SCHEDULED OUT PID: %d\n", pid);
 			//kernel space task
 			if(p->mm == NULL)
-			{
-				entries = stack_trace_save(stackTrace, MAX_TRACE, 0);
-				space_id= 0;
-			}		
-			//convert the stack trace into a usable value
+				stack_trace_save(stackTrace, MAX_TRACE, 0);
 			else
-			{
 				(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
-				space_id = 1;
-			}
 
 			for(i = 0; i < MAX_TRACE; i++)
 				stackTraceValue += stackTrace[i];
 
-			printk(KERN_INFO "Stack Trace Value: %d\n", stackTraceValue);
+			stackTraceValue += pid;	
+			hash = jhash(&stackTraceValue, sizeof(stackTraceValue), 0);	
+			if(!hash_empty(pidHashtable))
+			{
+				hash_for_each(pidHashtable, bkt, current_hash_entry, hash_list)
+				{
+					//Increment the number of schedules and update the current time
+					if(current_hash_entry->hash_key == hash)
+					{
+						current_hash_entry->cumulativeTime += rdtsc() - current_hash_entry->currentTime;
+						current_hash_entry->currentTime = 0;
+						return 1;
+					}
+				}
+			}
 
-			stackTraceValue += pid;
-			addPid(stackTraceValue, stackTrace, space_id);
 		}
 	}
 
 	return 0;
+}
+static int return_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	//scheduled in task
+	struct task_struct *p = (struct task_struct *)regs_return_value(regs);
+	u32 pid = p->pid;
+	unsigned long *stackTrace = kmalloc(2*sizeof(unsigned long), GFP_ATOMIC);
+	unsigned long long currentTime;
+	int space_id;
+	u32 stackTraceValue = 0;
+	int i;
+
+	printk(KERN_INFO "SCHEDULED OUT PID: %d\n", pid);
+	if(p->mm == NULL)
+	{
+		stack_trace_save(stackTrace, MAX_TRACE, 0);
+		space_id = 0;
+	}	
+	else
+	{
+		(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
+		space_id = 1;
+	}
+	for(i = 0; i < MAX_TRACE; i++)
+		stackTraceValue += stackTrace[i];
+
+	stackTraceValue += pid;
+	currentTime = rdtsc();
+	addPid(stackTraceValue, stackTrace, space_id, currentTime);
+	return 0;
+
 }
 //create proc file
 static int perftop_show(struct seq_file *m, void *v) {
@@ -150,6 +196,7 @@ static int perftop_open(struct inode *inode, struct  file *file) {
 }
 static struct kretprobe perftop_kretprobe = {
 	.entry_handler 		= entry_handler,
+	.handler 		= return_handler,
 	.kp.symbol_name = "pick_next_task_fair",
 	.maxactive = 1,
 
