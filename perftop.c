@@ -10,7 +10,7 @@
 #include <linux/jhash.h>
 #include <linux/stacktrace.h>
 #include <linux/kallsyms.h>
-#define MAX_TRACE 10
+#define MAX_TRACE 2
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Luke Sanyour");
@@ -28,10 +28,7 @@ struct hash_entry {
 	int space;
 };
 //using kallsyms to get save_stack_trace_user symbol
-unsigned int stack_trace_save_user(unsigned long *store, unsigned int size);
-typedef typeof(&stack_trace_save_user) stack_trace_save_user_fn;
-#define stack_trace_save_user (* (stack_trace_save_user_fn)kallsyms_stack_trace_save_user)
-void *kallsyms_stack_trace_save_user = NULL;
+static unsigned int (*stack_trace_save_user_p)(unsigned long *, unsigned int) = (unsigned int (*)(unsigned long*, unsigned int)) 0xffffffffae15e050;
 
 //function and add and update PIDs in the hash table
 void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id)
@@ -79,7 +76,7 @@ void deleteHashTable(void)
 //entry handler for Kretprobe
 static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-	unsigned long *stackTrace = kmalloc(15*sizeof(unsigned long), GFP_ATOMIC);
+	unsigned long *stackTrace = kmalloc(2*sizeof(unsigned long), GFP_ATOMIC);
 	u32 stackTraceValue = 0;
 	int i = 0;
 	u32 pid;
@@ -104,7 +101,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 			//convert the stack trace into a usable value
 			else
 			{
-				entries = kallsyms_stack_trace_save_user(stackTrace, MAX_TRACE);
+				(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
 				space_id = 1;
 			}
 
@@ -170,7 +167,6 @@ static const struct file_operations perftop_fops = {
 static int __init proj3_init(void)
 {
 	int ret;
-	kallsyms_stack_trace_save_user = (void*)kallsyms_lookup_name("stack_trace_save_user");
 	//register KProbe
 	ret = register_kretprobe(&perftop_kretprobe);
 	//create Proc File "perftop"
