@@ -20,6 +20,9 @@ MODULE_DESCRIPTION("Project 3 Perftop");
 static DEFINE_HASHTABLE(pidHashtable, 16);
 //static DEFINE_SPINLOCK(my_lock);
 //An entry in the hash table
+//space = user or kernel, 0 for kernel, 1 for user
+//current time, time stamp when schedueld int
+//cumulative time, total time spent on by CPU
 struct hash_entry {
 
 	u32 hash_key;
@@ -35,6 +38,9 @@ struct hash_entry {
 static unsigned int (*stack_trace_save_user_p)(unsigned long *, unsigned int) = NULL; 
 
 //function and add and update PIDs in the hash table
+//space_id = 0 for kernel, 1 for user
+//curr_time = current time from rdtsc() when scheduled in
+//direction = scheduled in/out, 0 for in, 1 for out
 void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id, unsigned long long curr_time, int direction)
 {	
 	int bkt;
@@ -44,6 +50,11 @@ void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id, unsig
 	//hash the stack trace and PID value
 	//hash = jhash(&stackTraceValue, sizeof(stackTraceValue), 0);
 	hash = stackTraceValue;
+	if(!direction) 
+		printk(KERN_INFO "IN HASH:");
+	if(direction)
+		printk(KERN_INFO "OUT HASH:");
+	printk(KERN_INFO "%u\n", hash);
 	//check if PID is in hash table and update
 	if(!hash_empty(pidHashtable))
 	{
@@ -52,12 +63,12 @@ void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id, unsig
 			//Increment the number of schedules and update the current time
 			if(current_hash_entry->hash_key == hash)
 			{
-				if(direction)
+				if(!direction)
 				{
 					current_hash_entry->currentTime = curr_time;
 					current_hash_entry->numSchedules++;
 				}
-				if(!direction)
+				if(direction)
 				{
 					current_hash_entry->cumulativeTime += rdtsc() - current_hash_entry->currentTime;
 					current_hash_entry->currentTime = 0;
@@ -67,7 +78,7 @@ void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id, unsig
 		}
 	}
 	//otherwise, add it to the hash table
-	if(he != NULL)
+	if(he != NULL && !direction)
 	{
 		he->hash_key = hash;
 		he->numSchedules = 1;
@@ -101,7 +112,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	//stored in rsi register by standard x86 64-bit calling convention
 	if(regs->si)
 	{
-		//scheduled out task
+		//scheduled out task, previous task, second argmument of pick_next_task_fair
 		struct task_struct *p = (struct task_struct *)regs->si;
 		if(p != NULL && p->pid)
 		{	
@@ -112,13 +123,14 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 				stack_trace_save(stackTrace, MAX_TRACE, 0);
 				space_id = 0;
 			}
-			else if(p->mm != NULL)
+			//user task
+			else 
 			{				
 				(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
 				space_id = 1;
 
 			}
-
+			//dovetail 2 element stack trace to combine
 			stackTraceValue = (((stackTrace[0] + stackTrace[1]) * (stackTrace[0] + stackTrace[1] + 1)) / 2) + stackTrace[1]; 
 			stackTraceValue += pid;
 			currentTime = rdtsc();
@@ -127,44 +139,42 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	}
 	return 0;
 }
-/*
-   static int return_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
-   {
-//scheduled in task
-struct task_struct *p = (struct task_struct *)regs_return_value(regs);
-u32 pid;
-unsigned long *stackTrace;
-unsigned long long currentTime;
-int space_id;
-unsigned long long stackTraceValue = 0;
-int i;
-if(p != NULL)
-{
-pid = p->pid;
-stackTrace = kmalloc(15*sizeof(unsigned long), GFP_ATOMIC);
-if(p->mm == NULL)
-{
-stack_trace_save(stackTrace, MAX_TRACE, 0);
-stack_trace_print(stackTrace, MAX_TRACE, 0);
-printk(KERN_INFO "%p\n", p->mm);
-space_id = 0;
-}	
-else
-{
-//(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
-//stack_trace_print(stackTrace, MAX_TRACE, 2);
-//space_id = 1;
-}
-for(i = 0; i < MAX_TRACE; i++)
-stackTraceValue += stackTrace[i];
 
-stackTraceValue += pid;
-currentTime = rdtsc();
-//addPid(stackTraceValue, stackTrace, space_id, currentTime, 0);
-}
-return 0;
+static int return_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+	//scheduled in task, result of pick_next_task_fair
+	struct task_struct *p = (struct task_struct *)regs_return_value(regs);
+	u32 pid;
+	unsigned long *stackTrace;
+	unsigned long long currentTime;
+	int space_id;
+	unsigned long stackTraceValue = 0;
+	if(p != NULL && p->pid)
+	{
+		pid = p->pid;
+		stackTrace = kmalloc(15*sizeof(unsigned long), GFP_ATOMIC);
+		//kernel task
+		if(p->mm == NULL)
+		{
+			stack_trace_save(stackTrace, MAX_TRACE, 0);
+			space_id = 0;
+		}
+		//user task
+		else
+		{
+			(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
+			space_id = 1;
+		}
 
-}*/
+		//dovetail 2 element stack trace to combine
+		stackTraceValue = (((stackTrace[0] + stackTrace[1]) * (stackTrace[0] + stackTrace[1] + 1)) / 2) + stackTrace[1]; 
+		stackTraceValue += pid;
+		currentTime = rdtsc();
+		addPid(stackTraceValue, stackTrace, space_id, currentTime, 0);
+	}
+	return 0;
+
+}
 //create proc file
 static int perftop_show(struct seq_file *m, void *v) {
 	int bkt;
@@ -187,7 +197,7 @@ static int perftop_show(struct seq_file *m, void *v) {
 			seq_printf(m, "%lx\n", current_stack_trace[i]);
 		}	
 		seq_printf(m, "# Of Schedules: %d\n ", current_hash_entry->numSchedules);
-		//seq_printf(m, "Cumulative Time: %llu\n", current_hash_entry->cumulativeTime);
+		seq_printf(m, "Cumulative Time: %llu\n", current_hash_entry->cumulativeTime);
 		process_num++;
 	}
 	return 0;
@@ -199,7 +209,7 @@ static int perftop_open(struct inode *inode, struct  file *file) {
 }
 static struct kretprobe perftop_kretprobe = {
 	.entry_handler 		= entry_handler,
-	//	.handler 		= return_handler,
+	.handler 		= return_handler,
 	.kp.symbol_name = "pick_next_task_fair",
 	.maxactive = 1,
 
