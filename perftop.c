@@ -11,8 +11,9 @@
 #include <linux/stacktrace.h>
 #include <linux/kallsyms.h>
 #include <linux/spinlock.h>
-#define MAX_TRACE 2
+#define MAX_TRACE 1
 
+#define MASK_1 0x0000000000000000
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Luke Sanyour");
 MODULE_DESCRIPTION("Project 3 Perftop");
@@ -25,7 +26,7 @@ static DEFINE_HASHTABLE(pidHashtable, 16);
 //cumulative time, total time spent on by CPU
 struct hash_entry {
 
-	u32 hash_key;
+	unsigned long hash_key;
 	int numSchedules;
 	unsigned long *stack_trace;
 	int space;
@@ -41,20 +42,15 @@ static unsigned int (*stack_trace_save_user_p)(unsigned long *, unsigned int) = 
 //space_id = 0 for kernel, 1 for user
 //curr_time = current time from rdtsc() when scheduled in
 //direction = scheduled in/out, 0 for in, 1 for out
-void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id, unsigned long long curr_time, int direction)
+void addPid(unsigned long stackTraceValue, unsigned long *stack_trace, int space_id, unsigned long long curr_time, int direction)
 {	
 	int bkt;
 	struct hash_entry *current_hash_entry;
 	struct hash_entry *he = kmalloc(sizeof(*he), GFP_ATOMIC);
-	u32 hash;
+	unsigned long  hash;
 	//hash the stack trace and PID value
 	//hash = jhash(&stackTraceValue, sizeof(stackTraceValue), 0);
 	hash = stackTraceValue;
-	if(!direction) 
-		printk(KERN_INFO "IN HASH:");
-	if(direction)
-		printk(KERN_INFO "OUT HASH:");
-	printk(KERN_INFO "%u\n", hash);
 	//check if PID is in hash table and update
 	if(!hash_empty(pidHashtable))
 	{
@@ -63,22 +59,24 @@ void addPid(u32 stackTraceValue, unsigned long *stack_trace, int space_id, unsig
 			//Increment the number of schedules and update the current time
 			if(current_hash_entry->hash_key == hash)
 			{
-				if(!direction)
+				if(direction)
 				{
 					current_hash_entry->currentTime = curr_time;
 					current_hash_entry->numSchedules++;
 				}
+				/*
 				if(direction)
 				{
 					current_hash_entry->cumulativeTime += rdtsc() - current_hash_entry->currentTime;
 					current_hash_entry->currentTime = 0;
 				}
+				*/
 				return;
 			}
 		}
 	}
 	//otherwise, add it to the hash table
-	if(he != NULL && !direction)
+	if(he != NULL && direction == 1)
 	{
 		he->hash_key = hash;
 		he->numSchedules = 1;
@@ -107,6 +105,7 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	u32 pid;
 	unsigned long long currentTime;
 	int space_id;
+	
 
 	//retrive current task, which is the second argument of pick_next_task_fair,
 	//stored in rsi register by standard x86 64-bit calling convention
@@ -122,24 +121,29 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 			{
 				stack_trace_save(stackTrace, MAX_TRACE, 0);
 				space_id = 0;
+				//dovetail 2 element stack trace to combine
+				stackTraceValue += pid;
+				stackTraceValue += stackTrace[0];
+				currentTime = rdtsc();
+				addPid(stackTraceValue, stackTrace, space_id, currentTime, 1);
+				printk(KERN_INFO "PID: %u\nSTACKT1: %lu\nSTACKT2:%lu\nSTACKVAL: %lu\n", pid,stackTrace[0], stackTrace[1],  stackTraceValue);
 			}
 			//user task
+			/*
 			else 
 			{				
 				(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
 				space_id = 1;
 
 			}
+			*/
 			//dovetail 2 element stack trace to combine
-			stackTraceValue = (((stackTrace[0] + stackTrace[1]) * (stackTrace[0] + stackTrace[1] + 1)) / 2) + stackTrace[1]; 
-			stackTraceValue += pid;
-			currentTime = rdtsc();
-			addPid(stackTraceValue, stackTrace, space_id, currentTime, 1);
+			//addPid(stackTraceValue, stackTrace, space_id, currentTime, 1);
 		}
 	}
 	return 0;
 }
-
+/*
 static int return_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	//scheduled in task, result of pick_next_task_fair
@@ -175,6 +179,7 @@ static int return_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	return 0;
 
 }
+*/
 //create proc file
 static int perftop_show(struct seq_file *m, void *v) {
 	int bkt;
@@ -209,7 +214,6 @@ static int perftop_open(struct inode *inode, struct  file *file) {
 }
 static struct kretprobe perftop_kretprobe = {
 	.entry_handler 		= entry_handler,
-	.handler 		= return_handler,
 	.kp.symbol_name = "pick_next_task_fair",
 	.maxactive = 1,
 
