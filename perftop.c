@@ -42,7 +42,7 @@ struct rbEntry {
 	unsigned long long cumulativeTime;
 	unsigned long* stack_trace;
 	unsigned long hash;
-	struct rb_node run_node;
+	struct rb_node node;
 };
 
 //Create function pointer to stack_trace_save_user, since it's not an exported function
@@ -50,24 +50,23 @@ struct rbEntry {
 static unsigned int (*stack_trace_save_user_p)(unsigned long *, unsigned int) = NULL; 
 
 //function to insert a value into the rb tree
-static void rb_insert_entry(struct my_rb_tree *root, struct rbEntry *en)
+void rb_insert_entry(struct my_rb_tree *root, struct rbEntry *en)
 {
-	struct rb_node **link = &root->root_node.rb_node;
+	struct rb_node **link = &(root->root_node.rb_node);
 	struct rb_node *parent = NULL;
 	struct rbEntry *entry;
 	while(*link)
 	{
 		parent = *link;
-		entry = rb_entry(parent, struct rbEntry, run_node);
+		entry = rb_entry(parent, struct rbEntry, node);
 		if(en->cumulativeTime > entry->cumulativeTime)
 			link = &parent->rb_left;
 		else
 			link = &parent->rb_right;
 	}
-	rb_link_node(&en->run_node, parent, link);
-	rb_insert_color(&en->run_node, &root->root_node);
+	rb_link_node(&en->node, parent, link);
+	rb_insert_color(&en->node, &root->root_node);
 }
-
 //function and add and update PIDs in the hash table
 //space_id = 0 for kernel, 1 for user
 //curr_time = current time from rdtsc() when scheduled in
@@ -77,11 +76,13 @@ void addPid(unsigned long stackTraceValue, unsigned long *stack_trace, int space
 	int bkt;
 	struct hash_entry *current_hash_entry;
 	struct hash_entry *he = kmalloc(sizeof(*he), GFP_ATOMIC);
-	//struct rbEntry *rb = kmalloc(sizeof(*rb), GFP_ATOMIC);
+	struct rbEntry *rb = kmalloc(sizeof(*rb), GFP_ATOMIC);
 	struct rb_node *node;
 	static unsigned long currentHash = 0;
+	static int entries = 0;
 	unsigned long  hash = 0;
 	bool found = false;
+	bool timeUpdate = false;
 	//hash the stack trace and PID value
 	hash = jhash(&stackTraceValue, sizeof(stackTraceValue), 0);
 	//hash = stackTraceValue;
@@ -101,30 +102,33 @@ void addPid(unsigned long stackTraceValue, unsigned long *stack_trace, int space
 			{
 				current_hash_entry->cumulativeTime += curr_time - current_hash_entry->inTime;
 				current_hash_entry->inTime = 0;
-				//delete old entry in rb tree
-				/*
-				for (node = rb_last(&(tree.root_node)); node; node = rb_prev(node))
-				{
-					if(rb_entry(node, struct rbEntry, run_node)->hash == currentHash)
-					{
-						rb_erase(node, &(tree.root_node));
-					}		
-				}
-				//add new entry into rb tree with new time
 				rb->cumulativeTime = current_hash_entry->cumulativeTime;
 				rb->stack_trace = current_hash_entry->stack_trace; 
 				rb->hash = currentHash;
-				rb_insert_entry(&tree, rb);
-				*/
+				timeUpdate = true;
 			}
 		}
 	}	
+	if(timeUpdate)
+	{
+		for(node = rb_first(&(tree.root_node)); node; node = rb_next(node))
+		{
+
+			if(rb_entry(node, struct rbEntry, node)->hash == currentHash)
+			{
+				rb_erase(node, &(tree.root_node));
+				break;
+			}
+
+		}
+		rb_insert_entry(&tree, rb);
+	}
 	currentHash = hash;
 	if(found) 
 		return;
 
 	//otherwise, add it to the hash table and to the rb tree
-	if(he != NULL)
+	if(he != NULL && rb != NULL && !timeUpdate)
 	{
 		he->hash_key = hash;
 		he->numSchedules = 1;
@@ -132,12 +136,10 @@ void addPid(unsigned long stackTraceValue, unsigned long *stack_trace, int space
 		he->space = space_id;
 		he->inTime = curr_time;
 		he->cumulativeTime = 0;
-		/*
-		rb->cumulativeTime = 0;
+		rb->cumulativeTime = ++entries;
 		rb->stack_trace = stack_trace; 
 		rb->hash = hash;
 		rb_insert_entry(&tree, rb);
-		*/	
 		hash_add(pidHashtable, &he->hash_list, hash);
 	}
 }
@@ -149,6 +151,15 @@ void deleteHashTable(void)
 	hash_for_each(pidHashtable, bkt, current_hash_entry, hash_list)
 	{
 		hash_del(&current_hash_entry->hash_list);
+	}
+}
+//function to delete rb tree
+void deleteRBTree(void)
+{
+	struct rb_node *node;
+	for (node = rb_last(&(tree.root_node)); node; node = rb_prev(node))
+	{
+		rb_erase(node, &(tree.root_node));
 	}
 }
 //entry handler for Kretprobe
@@ -175,18 +186,20 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 			{
 				stack_trace_save(stackTrace, MAX_TRACE, 0);
 				space_id = 0;
+				stackTraceValue += pid;
+				stackTraceValue += stackTrace[0] + stackTrace[1];
+				currentTime = rdtsc();
+				addPid(stackTraceValue, stackTrace, space_id, currentTime);
 			}
 			//user task
 			else 
 			{				
-				(*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
-				space_id = 1;
+				/*
+				   (*stack_trace_save_user_p)(stackTrace, MAX_TRACE);
+				   space_id = 1;
+				   */
 
 			}
-			stackTraceValue += pid;
-			stackTraceValue += stackTrace[0] + stackTrace[1];
-			currentTime = rdtsc();
-			addPid(stackTraceValue, stackTrace, space_id, currentTime);
 		}
 	}
 	return 0;
@@ -254,6 +267,7 @@ static void __exit proj3_exit(void)
 {
 	//delete hash table
 	deleteHashTable();
+	deleteRBTree();
 	//un-register KProbe
 	unregister_kretprobe(&perftop_kretprobe);
 	//delete proc File
