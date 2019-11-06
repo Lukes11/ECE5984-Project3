@@ -18,9 +18,6 @@ MODULE_DESCRIPTION("Project 3 Perftop");
 
 static DEFINE_HASHTABLE(pidHashtable, 16);
 //An entry in the hash table
-//space = user or kernel, 0 for kernel, 1 for user
-//current time, time stamp when schedueld int
-//cumulative time, total time spent on by CPU
 struct hash_entry {
 
 	unsigned long hash_key;
@@ -32,7 +29,7 @@ struct hash_entry {
 	int pid;
 	struct hlist_node hash_list;
 };
-//defind red-black tree
+//define red-black tree
 struct my_rb_tree {
 	struct rb_root root_node;
 };
@@ -49,7 +46,6 @@ struct rbEntry {
 };
 
 //Create function pointer to stack_trace_save_user, since it's not an exported function
-//Obtained the function address from /proc/kallsyms
 static unsigned int (*stack_trace_save_user_p)(unsigned long *, unsigned int) = NULL; 
 
 //function to insert a value into the rb tree
@@ -176,7 +172,6 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	unsigned long stackTraceValue = 0;
 	u32 pid;
 	unsigned long long currentTime;
-
 
 	//retrive current task, which is the second argument of pick_next_task_fair,
 	//stored in rsi register by standard x86 64-bit calling convention
