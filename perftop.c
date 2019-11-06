@@ -206,28 +206,41 @@ static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 }
 
 static int perftop_show(struct seq_file *m, void *v) {
-	int bkt;
-	int i = 0;
-	struct hash_entry *current_hash_entry;	
-	unsigned long *current_stack_trace;
-	int process_num = 1;
-	hash_for_each(pidHashtable, bkt, current_hash_entry, hash_list)
-	{
-		current_stack_trace = current_hash_entry->stack_trace;
-		seq_printf(m, "===Process # %d=== \n", process_num);
+	/*
+	   int bkt;
+	   int i = 0;
+	   struct hash_entry *current_hash_entry;	
+	   unsigned long *current_stack_trace;
+	   int process_num = 1;
+	   hash_for_each(pidHashtable, bkt, current_hash_entry, hash_list)
+	   {
+	   current_stack_trace = current_hash_entry->stack_trace;
+	   seq_printf(m, "===Process # %d=== \n", process_num);
 
-		if(!current_hash_entry->space)
-			seq_printf(m, "KERNEL TASK\n");
-		if(current_hash_entry->space)
-			seq_printf(m, "USER TASK\n");
-		seq_printf(m, "Stack Trace: \n");
-		for(i = 0; i < MAX_TRACE; i++)
-		{
-			seq_printf(m, "%lx\n", current_stack_trace[i]);
-		}	
-		seq_printf(m, "# Of Schedules: %d\n ", current_hash_entry->numSchedules);
-		seq_printf(m, "Cumulative Time: %llu\n", current_hash_entry->cumulativeTime);
-		process_num++;
+	   if(!current_hash_entry->space)
+	   seq_printf(m, "KERNEL TASK\n");
+	   if(current_hash_entry->space)
+	   seq_printf(m, "USER TASK\n");
+	   seq_printf(m, "Stack Trace: \n");
+	   for(i = 0; i < MAX_TRACE; i++)
+	   {
+	   seq_printf(m, "%lx\n", current_stack_trace[i]);
+	   }	
+	   seq_printf(m, "# Of Schedules: %d\n ", current_hash_entry->numSchedules);
+	   seq_printf(m, "Cumulative Time: %llu\n", current_hash_entry->cumulativeTime);
+	   process_num++;
+	   }
+	   */
+	int i = 0;
+	struct rb_node *node = tree.root_node.rb_node;
+	while (i < 20)
+	{
+		struct rbEntry *rb = rb_entry(node, struct rbEntry, node);
+		
+		seq_printf(m, "Cumulative Time: %llu\n", rb->cumulativeTime);
+		
+		node = node->rb_left;
+		i++;
 	}
 	return 0;
 
